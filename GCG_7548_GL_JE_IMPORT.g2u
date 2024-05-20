@@ -22,6 +22,9 @@ V.Local.sYear.Declare
 V.Local.bOpen.Declare("Boolean",False)
 V.Local.sLine.Declare
 V.Local.sDate.Declare
+V.Local.sFilter.Declare
+V.Local.iCnt.Declare
+V.Local.sBatchFinal.Declare
 
 
 'TR 5/14/2024
@@ -47,6 +50,14 @@ F.Data.Datatable.AddColumn("dtUpdate","BATCH","String")
 F.Data.Datatable.AddColumn("dtUpdate","LINE","String")
 F.Data.Datatable.AddColumn("dtUpdate","P_DATE","String")
 
+F.Data.Datatable.Create("dtData",True)
+F.Data.Datatable.AddColumn("dtData","DATE","String")
+F.Data.Datatable.AddColumn("dtData","BATCHREF","String")
+F.Data.Datatable.AddColumn("dtData","ACCOUNT","String")
+F.Data.Datatable.AddColumn("dtData","DEBIT","String")
+F.Data.Datatable.AddColumn("dtData","CREDIT","String")
+F.Data.Datatable.AddColumn("dtData","DESC","String")
+
 F.Automation.MSExcel.CreateAppObject("MSExcel")
 V.Local.bOpen.Set(True)
 F.Automation.MSExcel.OpenWorkbook("MSExcel","UPL",V.Local.sFileName)
@@ -54,87 +65,95 @@ F.Automation.MSExcel.OpenWorkbook("MSExcel","UPL",V.Local.sFileName)
 F.Automation.MSExcel.OpenWorksheet("UPL","UPLSheet",1)
 F.Automation.MSExcel.RowCount("UPLSheet",V.Local.iTRow)
 
-F.Intrinsic.Control.For(V.Local.iRow,2,V.Local.iTRow,1)
-	F.Automation.MSExcel.ReadRow("UPLSheet",V.Local.iRow,1,10,V.Local.sRow)
-	F.Intrinsic.String.Split(V.Local.sRow,"*!*",V.Local.sRow)
-	
-	'Add line and date to update datatable so we can update the transaction date later.
-	F.Intrinsic.Math.Sub(V.Local.iRow,1,V.Local.sLine)
-	F.Intrinsic.String.LPad(V.Local.sLine,"0",5,V.Local.sLine)
-	F.Intrinsic.String.Format(V.Local.sRow(0),"YYYYMMDD",V.Local.sDate)
-	F.Data.Datatable.AddRow("dtUpdate","LINE",V.Local.sLine,"P_DATE",V.Local.sDate)
-	
-	'Make G/L Account 15 characters
-	F.Intrinsic.String.RPad(V.Local.sRow(2).Trim," ",15,V.Local.sFileRow)
-	'Pad the amount
-	F.Intrinsic.Control.If(V.Local.sRow(3).Trim,=,"")
-		'If debit is empty, we use the credit amt
-		F.Intrinsic.Math.Mult(V.Local.sRow(4),-1,V.Local.sRow(4))
-		F.Intrinsic.String.LPad(V.Local.sRow(4)," ",12,V.Local.sField)
-	F.Intrinsic.Control.Else
-		F.Intrinsic.String.LPad(V.Local.sRow(3)," ",12,V.Local.sField)
-	F.Intrinsic.Control.EndIf
-	F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sField,V.Local.sFileRow)
-	
-	'Ensuring only 30 chars for description
-	F.Intrinsic.Control.If(V.Local.sRow(5).Trim,<>,"")
-		V.Local.sField.Set(V.Local.sRow(5).Trim)
-		V.Local.sDesc.Set(V.Local.sRow(5).Trim)
-	F.Intrinsic.Control.Else
-		V.Local.sField.Set(V.Local.sDesc.Trim)
-	F.Intrinsic.Control.EndIf
-	
-	F.Intrinsic.String.RPad(V.Local.sField," ",30,V.Local.sField)
-	
-	F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sField,V.Local.sFileRow)
-	
-	F.Intrinsic.String.Format(V.Local.sRow(0),"MM",V.Local.sMonth)
-	F.Intrinsic.String.Format(V.Local.sRow(0),"YY",V.Local.sYear)
-	F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sYear.Trim,",",V.Local.sMonth.Trim,V.Local.sFileRow)
-
-	F.Intrinsic.String.Left(V.Local.sRow(1),7,V.Local.sTemp)
-	F.Intrinsic.String.RPad(V.Local.sTemp," ",7,V.Local.sField)
-	F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sField,",               ",V.Local.sFileRow)
-	
-	F.Intrinsic.Control.If(V.Local.sFile.Trim,=,"")
-		V.Local.sFile.Set(V.Local.sFileRow)
-	F.Intrinsic.Control.Else
-		F.Intrinsic.String.Concat(V.Local.sFile,V.Ambient.NewLine,V.Local.sFileRow,V.Local.sFile)
-	F.Intrinsic.Control.EndIf
-F.Intrinsic.Control.Next(V.Local.iRow)
-
+F.Intrinsic.Control.CallSub(FillOutFile)
 F.Automation.MSExcel.DestroyAllObjects("MSExcel","UPL","UPLSheet")
 V.Local.bOpen.Set(False)
-'Save the file to GLtttccc located in FILES folder
-F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GL",V.Caller.Terminal,V.Caller.CompanyCode,"1234",V.Local.sFileName)
-F.Intrinsic.File.String2File(V.Local.sFileName,V.Local.sFile)
 
-'Preparing the program parameter and run XGL004
-F.Intrinsic.String.RPad(V.Caller.User," ",8,V.Local.sUser)
-F.Intrinsic.String.Concat("GL",V.Caller.Terminal,V.Caller.CompanyCode,"1234",V.Local.sParam)
-F.Intrinsic.String.RPad(V.Local.sParam," ",12,V.Local.sParam)
-F.Intrinsic.String.Concat(V.Ambient.QuadQuote,V.Caller.CompanyCode,V.Local.sParam,V.Local.sUser.UCase,V.Ambient.QuadQuote,V.Local.sParam)
-F.Intrinsic.Task.LaunchGSSSync("XGL004","-C",V.Local.sParam)
+'Now we need to get a list of batch references
+F.Data.DataView.Create("dtData","dvData",22)
+F.Data.DataView.ToDataTableDistinct("dtData","dvData","dtBatch","BATCHREF",True)
 
-'Get the latest batch number processed
-F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+F.Intrinsic.Control.For(V.Local.iCnt,0,V.DataTable.dtBatch.RowCount--,1)
+	F.Intrinsic.String.Build("[BATCHREF] = '{0}'",V.DataTable.dtBatch(V.Local.iCnt).BATCHREF!FieldValTrim,V.Local.sFilter)
+	F.Data.DataView.SetFilter("dtData","dvData",V.Local.sFilter)
+	V.Local.sFile.Set("")
+	F.Intrinsic.Control.For(V.Local.iRow,0,V.DataView.dtData!dvData.RowCount--,1)
+		
+		'Add line and date to update datatable so we can update the transaction date later.
+		F.Intrinsic.Math.Add(V.Local.iRow,1,V.Local.sLine)
+		F.Intrinsic.String.LPad(V.Local.sLine,"0",5,V.Local.sLine)
+		F.Intrinsic.String.Format(V.DataView.dtData!dvData(V.Local.iRow).DATE!FieldValTrim,"YYYYMMDD",V.Local.sDate)
+		F.Data.Datatable.AddRow("dtUpdate","LINE",V.Local.sLine,"P_DATE",V.Local.sDate)
+		
+		'Make G/L Account 15 characters
+		F.Intrinsic.String.RPad(V.DataView.dtData!dvData(V.Local.iRow).ACCOUNT!FieldValTrim," ",15,V.Local.sFileRow)
+		'Pad the amount
+		F.Intrinsic.Control.If(V.DataView.dtData!dvData(V.Local.iRow).DEBIT!FieldValTrim,=,"")
+			'If debit is empty, we use the credit amt
+			F.Intrinsic.Math.Mult(V.DataView.dtData!dvData(V.Local.iRow).CREDIT!FieldValTrim,-1,V.Local.sTemp)
+			F.Intrinsic.String.LPad(V.Local.sTemp," ",12,V.Local.sField)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.LPad(V.DataView.dtData!dvData(V.Local.iRow).DEBIT!FieldValTrim," ",12,V.Local.sField)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sField,V.Local.sFileRow)
+		
+		'Get Description
+		V.Local.sField.Set(V.DataView.dtData!dvData(V.Local.iRow).DESC!FieldValTrim)
+		F.Intrinsic.String.RPad(V.Local.sField," ",30,V.Local.sField)
+		
+		F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sField,V.Local.sFileRow)
+		
+		F.Intrinsic.String.Format(V.Ambient.Date,"MM",V.Local.sMonth)
+		F.Intrinsic.String.Format(V.Ambient.Date,"YY",V.Local.sYear)
+		F.Intrinsic.String.Concat(V.Local.sFileRow,",",V.Local.sYear.Trim,",",V.Local.sMonth.Trim,V.Local.sFileRow)
+	
+		F.Intrinsic.String.Left(V.DataView.dtData!dvData(V.Local.iRow).BATCHREF!FieldValTrim,15,V.Local.sTemp)
+		F.Intrinsic.String.RPad(V.Local.sTemp," ",15,V.Local.sField)
+		F.Intrinsic.String.Concat(V.Local.sFileRow,",       ,",V.Local.sField,V.Local.sFileRow)
+		
+		F.Intrinsic.Control.If(V.Local.sFile.Trim,=,"")
+			V.Local.sFile.Set(V.Local.sFileRow)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.Concat(V.Local.sFile,V.Ambient.NewLine,V.Local.sFileRow,V.Local.sFile)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iRow)
 
-V.Local.dToday.Set(V.Ambient.Date)
-F.Intrinsic.String.Build("select batch from v_gl_jrnl_entry where userid = '{0}' and last_chg_pgm = 'XGL004' and last_chg_date = '{1}' order by last_chg_time desc",V.Local.sUser.Trim,V.Local.dToday.PervasiveDate,V.Local.sSQL)
-F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
-V.Local.sBatch.Set(V.ODBC.conx!rst.FieldVal!batch)
-F.ODBC.conx!rst.Close
-
-'Now that we have the batch number, update the GL_JRNL_ENTRY table
-F.Data.Datatable.SetValue("dtUpdate",-1,"BATCH",V.Local.sBatch)
-F.Data.Datatable.SaveToDB("dtUpdate","conx","GL_JRNL_ENTRY","BATCH*!*LINE",256)
-F.Data.Datatable.Close("dtUpdate")
-
-F.ODBC.Connection!conx.Close
+	'Save the file to GLtttccc located in FILES folder
+	F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GL",V.Caller.Terminal,V.Caller.CompanyCode,"1234",V.Local.sFileName)
+	F.Intrinsic.File.String2File(V.Local.sFileName,V.Local.sFile)
+	
+	'Preparing the program parameter and run XGL004
+	F.Intrinsic.String.RPad(V.Caller.User," ",8,V.Local.sUser)
+	F.Intrinsic.String.Concat("GL",V.Caller.Terminal,V.Caller.CompanyCode,"1234",V.Local.sParam)
+	F.Intrinsic.String.RPad(V.Local.sParam," ",12,V.Local.sParam)
+	F.Intrinsic.String.Concat(V.Ambient.QuadQuote,V.Caller.CompanyCode,V.Local.sParam,V.Local.sUser.UCase,V.Ambient.QuadQuote,V.Local.sParam)
+	F.Intrinsic.Task.LaunchGSSSync("XGL004","-C",V.Local.sParam)
+	
+	'Get the latest batch number processed
+	F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+	
+	V.Local.dToday.Set(V.Ambient.Date)
+	F.Intrinsic.String.Build("select batch from v_gl_jrnl_entry where userid = '{0}' and last_chg_pgm = 'XGL004' and last_chg_date = '{1}' order by last_chg_time desc",V.Local.sUser.Trim,V.Local.dToday.PervasiveDate,V.Local.sSQL)
+	F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+	V.Local.sBatch.Set(V.ODBC.conx!rst.FieldVal!batch)
+	F.ODBC.conx!rst.Close
+	
+	'Now that we have the batch number, update the GL_JRNL_ENTRY table
+	F.Data.Datatable.SetValue("dtUpdate",-1,"BATCH",V.Local.sBatch)
+	F.Data.Datatable.SaveToDB("dtUpdate","conx","GL_JRNL_ENTRY","BATCH*!*LINE",256)
+	F.Data.DataTable.DeleteRow("dtUpdate")
+	F.ODBC.Connection!conx.Close
+	
+	F.Intrinsic.Control.If(V.Local.sBatchFinal.Trim,=,"")
+		V.Local.sBatchFinal.Set(V.Local.sBatch.Trim)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("{0},{1}",V.Local.sBatchFinal,V.Local.sBatch,V.Local.sBatchFinal)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.iCnt)
 
 F.Intrinsic.UI.CloseWaitDialog
 
-F.Intrinsic.String.Build("Excel file has been processed into batch {0}",V.Local.sBatch,V.Local.sTemp)
+F.Intrinsic.String.Build("Excel file has been processed into batch(es) {0}",V.Local.sBatchFinal,V.Local.sTemp)
 F.Intrinsic.UI.Msgbox(V.Local.sTemp)
 
 F.Data.DataTable.Close("dtNotes")
@@ -150,9 +169,46 @@ F.Intrinsic.Control.Catch
 F.Intrinsic.Control.EndTry
 Program.Sub.Main.End
 
+Program.Sub.FillOutFile.Start
+V.Local.iTRow.Declare
+V.Local.iCnt.Declare
+V.Local.sDate.Declare
+V.Local.sBatch.Declare
+V.Local.sDesc.Declare
+V.Local.sRow.Declare
+F.Intrinsic.Control.Try
+
+F.Automation.MSExcel.RowCount("UPLSheet",V.Local.iTRow)
+
+F.Intrinsic.Control.For(V.Local.iCnt,1,V.Local.iTRow,1)
+	F.Automation.MSExcel.ReadRow("UPLSheet",V.Local.iCnt,1,10,V.Local.sRow)
+	F.Intrinsic.String.Split(V.Local.sRow,"*!*",V.Local.sRow)
+	'Set the date
+	F.Intrinsic.Control.If(V.Local.sRow(0).Trim,<>,"")
+		V.Local.sDate.Set(V.Local.sRow(0).Trim)
+	F.Intrinsic.Control.EndIf
+	'Set the Batch Ref
+	F.Intrinsic.Control.If(V.Local.sRow(1).Trim,<>,"")
+		V.Local.sBatch.Set(V.Local.sRow(1).Trim)
+	F.Intrinsic.Control.EndIf
+	'Set the Description
+	F.Intrinsic.Control.If(V.Local.sRow(9).Trim,<>,"")
+		V.Local.sDesc.Set(V.Local.sRow(9).Trim)
+	F.Intrinsic.Control.EndIf
+	
+	F.Data.Datatable.AddRowByMap("dtData","DATE*!*BATCHREF*!*ACCOUNT*!*DEBIT*!*CREDIT*!*DESC",V.Local.sDate,V.Local.sBatch,V.Local.sRow(2).Trim,V.Local.sRow(6).Trim,V.Local.sRow(7).Trim,V.Local.sDesc.Trim)
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Number: {3}{1}Description: {4}{1}{1}GAB Version: {5}",V.Caller.ScriptFile,V.Ambient.NewLine,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Global.sError)
+	F.Intrinsic.UI.Msgbox(V.Global.sError)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.FillOutFile.End
+
 Program.Sub.Comments.Start
 ${$0$}$GL Journal Entry Import$}$MHERTANTO$}$27/3/2018 7:29:31 PM$}$False
 ${$3$}$0$}$$}$0$}$-1$}$$}$12:00:00 AM$}$This GAB is created for Mechem Engineering & Trading Pte., Ltd to assist the user who reviews the price history of a part taken from quotes and invoices before the price is put in invoice. This GAB is very customized where the selection of part number on screen does not include part revision (only 17 chars). Moreover, customer name is also taken from customer name and address 1 field because Mechem dedicates these two fields for customer name.
 ${$5$}$2.0.0.0$}$2
-${$6$}$triley$}$20240515105541844$}$iK6nerqp9nur1h1iSBfRKBBz1ENCgYv67romMtyCCud5rYUsa60PnCrwulz7vn37icnqPgFsVy8=
+${$6$}$triley$}$20240520132544184$}$iK6nerqp9nur1h1iSBfRKBBz1ENCgYv6hupGiyFDyX47/MBP3MIFBQHvW2fOqBiAKLIBhDA8h8s=
 Program.Sub.Comments.End
